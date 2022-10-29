@@ -1,0 +1,552 @@
+; NEC NEC V Series Instruction Set Extensions
+; for Microsoft Macro Assembler 5.0
+; (C) Copyright H.Franke 2022
+
+         .XCREF
+         .XLIST
+
+; To be included via
+;
+;  "INCLUDE V20.MAC"
+;
+; This file will set CPU mode to 80186 instruction set and
+; define macros for all V20 operations in 8086 mode wich are
+; not part of the 186 ISA. Instruction names follow NEC naming
+; except for INS/EXT. See V20 Manualfor detaileddecription
+;
+; Additionaly macros for all Emulation related instructions
+; in 8080 mode (RETEM, CALLN) are included as well.
+;
+; To get a full set of 8080 instruction macros include
+; V20@80.MAC as well.
+;
+; -----
+;
+; Supported Instructions
+;
+; Native (8086) mode
+;
+; Additional REP Prefixes - must be placed in a source line of its own
+; REPC           : Prefix for Repeat While Carry
+; REPNC          : Prefix for Repeat While No Carry
+;
+; Bit Field Instructions
+; EXTBF (NEC:EXT): Extract Bitfield From Memory to AX
+; INSBF (NEC:INS): Insert Bitfield From AX to Memory
+;
+; Bit Manipulation Instructions
+; (Only register source supported ATM)
+; TEST1          : Test Bit for Set (1) in R/M 8/16 Indicated by CL or Immediate
+; NOT1           : Invert Bit in R/M 8/16 Indicated by CL or Immediate
+; CLR1           : Clear (->0) Bit in R/M 8/16 Indicated by CL or Immediate
+; SET1           : Set (->1) Bit in R/M 8/16 Indicated by CL or Immediate
+;
+; BCD String Arithmetic
+; ADD4S         : Add BCD Stings
+; SUB4S         : Subtract BCD Strings
+; CMP4S         : Compare BCD Strings
+;
+; BCD Rotates
+; (Only register source supported ATM)
+; ROL4          : Rotate Nibble Left From Register Thru AL
+; ROR4          : Rotate Nibble Right From Register Thru AL
+;
+; Emulation Handling
+; BRKEM vector# : Enter Emulation Mode
+;
+; -----
+;
+; Emulation (8080) mode
+;
+; V20 Specific
+; RETEM         : Return from Emulation
+; CALLN vector# : Call Native Code Vector
+;
+
+         .186                           ; Use 186 opodes for V20
+
+         IF1
+
+; Helper Macos to encode register values
+
+@@SREG86 MACRO    reg,type
+;; Parameter:
+;; reg  -> parameter to be encoded/checked
+;; type -> check for type ehen given (no check if empy)
+;;         B - Byte Register
+;;         W - Word Register
+;;         R - Any Register
+;;         M - Anything But Register
+;; Result:
+;; @@SREGV -> Register Encoding Value, 0 (AL/AX) if Unknown
+;; @@SREGR -> True (1) If Vallid Register Name Detcted
+;; @@SREGW -> Byte (0) or Word(1) Register
+
+@@SREGR  =        1         ; Assume Register Found
+@@SREGW  =        1         ; Assume 16 Bit Register
+         IFIDNI   <reg>,<AX>
+@@SREGV  =        000b
+         ELSE
+          IFIDNI   <reg>,<CX>
+@@SREGV  =        001b
+          ELSE
+           IFIDNI   <reg>,<DX>
+@@SREGV  =        010b
+           ELSE
+            IFIDNI   <reg>,<BX>
+@@SREGV  =        011b
+            ELSE
+             IFIDNI   <reg>,<SP>
+@@SREGV  =        100b
+             ELSE
+              IFIDNI   <reg>,<BP>
+@@SREGV  =        101b
+              ELSE
+               IFIDNI   <reg>,<SI>
+@@SREGV  =        110b
+               ELSE
+                IFIDNI   <reg>,<DI>
+@@SREGV  =        111b
+                ELSE
+@@SREGW  =        0         ; No 16 Bit Register Found, so Assume 8 Bit
+                 IFIDNI   <reg>,<AL>
+@@SREGV  =        000b
+                 ELSE
+                  IFIDNI   <reg>,<CL>
+@@SREGV  =        001b
+                  ELSE
+                   IFIDNI   <reg>,<DL>
+@@SREGV  =        010b
+                   ELSE
+                    IFIDNI   <reg>,<BL>
+@@SREGV  =        011b
+                    ELSE
+                     IFIDNI   <reg>,<AH>
+@@SREGV  =        100b
+                     ELSE
+                      IFIDNI   <reg>,<CH>
+@@SREGV  =        101b
+                      ELSE
+                       IFIDNI   <reg>,<DH>
+@@SREGV  =        110b
+                       ELSE
+                        IFIDNI   <reg>,<BH>
+@@SREGV  =        111b
+                        ELSE
+                         IF2
+;         .ERR     Parameter [&reg] not a valid register name
+;         %OUT     Parameter [&reg] not a valid register name
+                         ENDIF
+@@SREGV  =        000b
+@@SREGR  =        0         ; No Register Name Found
+@@SREGW  =        1         ; Default Register Width = Word
+                        ENDIF
+                       ENDIF
+                      ENDIF
+                     ENDIF
+                    ENDIF
+                   ENDIF
+                  ENDIF
+                 ENDIF
+                ENDIF
+               ENDIF
+              ENDIF
+             ENDIF
+            ENDIF
+           ENDIF
+          ENDIF
+         ENDIF
+
+;; Typechecking - maybe to be put into a dedicated check macro.
+;; Decision Table:
+;;        B W R M
+;; B-Reg  Y N Y N
+;; W-Reg  N Y Y N
+;; Else   N N N Y
+         IFNB    <type>         ; Test for Type?
+          IFIDNI  <type>,<M>    ; Only Non-Register (Memory?) Reference Allowed
+           IF      @@SREGR      ; But Register Given?
+            IF2
+         .ERR     Register reference [&reg] not supported.
+         %OUT     Register reference [&reg] not supported.
+            ENDIF
+           ENDIF
+          ELSE
+           IFIDNI  <type>,<R>    ; Only Register Reference Allowed
+            IF      @@SREGR EQ 0 ; But No Register Given?
+             IF2
+         .ERR     Parameter [&reg] must be a register.
+         %OUT     Parameter [&reg] must be a register.
+             ENDIF
+            ENDIF
+           ELSE
+            IFIDNI  <type>,<B>    ; Only Byte-Register Reference Allowed
+             IF      @@SREGW      ; But Word-Register Given?
+              IF2
+         .ERR     [&reg] not supported. Byte size register expected
+         %OUT     [&reg] not supported. Byte size register expected
+              ENDIF
+             ENDIF
+            ELSE
+             IFIDNI  <type>,<W>    ; Only Word-Register Reference Allowed
+              IF      @@SREGW EQ 0 ; But Byte-Register Given?
+               IF2
+         .ERR     [&reg] not supported. Word size register expected
+         %OUT     [&reg] not supported. Word size register expected
+               ENDIF
+              ENDIF
+             ELSE
+;; OOPS?
+              IF2
+         .ERR     Unknown check parameter [&type]. Only B/W/R/M supprted here.
+         %OUT     Unknown check parameter [&type]. Only B/W/R/M supprted here.
+              ENDIF
+             ENDIF
+            ENDIF
+           ENDIF
+          ENDIF
+         ENDIF
+
+         ENDM
+
+; 8086 Instructions encoding
+
+; Opcode
+; Format 0 - Just the Byte(s)
+; Will be direct generated by DB statement
+
+; Format 1 - Opcode with Size (Byte/Word)
+@86_OP1  RECORD @86_OP1_OPC  : 7,                  @86_OP1_SIZ : 1
+
+; Format 2 - Opcode with Direction and Size Byte/Word variant
+@86_OP2  RECORD @86_OP2_OPC  : 6, @86_OP2_DIR : 1, @86_OP2_SIZ : 1
+
+;ModR/M
+; Format 1 - Two Register OPC
+@86_MRM  RECORD @86_MRM_MOD  : 2, @86_MRM_REG : 3, @86_MRM_RM  : 3
+
+
+
+; 8080 Emulation Management specific to NEC V20
+
+; Native Mode instructions:
+
+; Break to Emulation
+BRKEM    MACRO    vector
+         DB       00Fh,0FFh,vector
+         ENDM
+
+; Emulation (8080) Mode Instructions:
+
+; Only emulation related instructions are included
+; here. To get a full set of 8080 instruction
+; macros include V20@80.MAC.
+
+; Return from 8080 emulation to native (8086) mode (8080 instruction)
+RETEM    MACRO
+         DB       0EDh,0FDh
+         ENDM
+
+; Call native (8086) mode function from 8080 mode (8080 instruction)
+CALLN    MACRO    vector
+         DB       0EDh,0EDh,vector
+         ENDM
+
+
+; New Rep Instructions
+
+; REP While Carry
+REPC     MACRO
+         DB       065h
+         ENDM
+
+; REP While No Carry
+REPNC    MACRO
+         DB       064h
+         ENDM
+
+
+; Lots of unfinished NEC (but not 80186) instructions to follow:))
+
+
+; Bit Field Instructions
+
+; EXTBF (NEC: EXT) Extract Bitfeld of <len> Bits Bitposition <pos> and up of Memory at DS:SI to AX Starting Right.
+EXTBF    MACRO    pos,len
+         @@SREG86 pos,B
+@@SREG1  =        @@SREGV
+         @@SREG86 len
+         IF       @@SREGR          ; Len is register
+          IF       @@SREGW         ; But word-register
+           IF2
+         .ERR     [&len] not supported. Byte size register expected.
+         %OUT     [&len] not supported. Byte size register expected.
+           ENDIF
+          ELSE
+           IF       @@SREGV EQ 000b ; Register is AL
+            IF2
+         .ERR     AL may not be used as length indicator [&len].
+         %OUT     AL may not be used as length indicator [&len].
+            ENDIF
+           ELSE
+         DB       00Fh,033h,@86_MRM <11b,@@SREGV,@@SREG1>
+           ENDIF
+          ENDIF
+         ELSE                      ; Len  is not register
+          IF       len GE 0 AND len LE 15   ; Is it numeric?
+         DB       00Fh,033h,@86_MRM  <11b,000b,@@SREG1>,len
+          ELSE
+           IF2
+         .ERR     [&len] not supported. Expression must evaluate to a numeric value ranged 0..15.
+         %OUT     [&len] not supported. Expression must evaluate to a numeric value ranged 0..15.
+           ENDIF
+          ENDIF
+         ENDIF
+         ENDM
+
+; INSBF (NEC: INS) Insert Bitfeld of <len> Bits from AX into Bitposition <pos> and up of Memory at ES:DI
+INSBF    MACRO    pos,len
+         @@SREG86 pos,B
+@@SREG1  =        @@SREGV
+         @@SREG86 len
+         IF       @@SREGR          ; Len is register
+          IF       @@SREGW         ; But word-register
+           IF2
+         .ERR     [&len] not supported. Byte size register expected.
+         %OUT     [&len] not supported. Byte size register expected.
+           ENDIF
+          ELSE
+           IF       @@SREGV EQ 000b ; Register is AL
+            IF2
+         .ERR     AL may not be used as length indicator [&len].
+         %OUT     AL may not be used as length indicator [&len].
+            ENDIF
+           ELSE
+         DB       00Fh,031h,@86_MRM<11b,@@SREGV,@@SREG1>
+           ENDIF
+          ENDIF
+         ELSE                      ; Len  is not register
+          IF       len GE 0 AND len LE 15   ; Is it numeric?
+         DB       00Fh,031h,@86_MRM<11b,000b,@@SREG1>,len
+          ELSE
+           IF2
+         .ERR     [&len] not supported. Expression must evaluate to a numeric value ranged 0..15.
+         %OUT     [&len] not supported. Expression must evaluate to a numeric value ranged 0..15.
+           ENDIF
+          ENDIF
+         ENDIF
+         ENDM
+
+
+; Bit Manipulation Instructions
+
+; Maybe the parameter check logic for these 4 can be turned into a single helper macro
+
+; TEST1 Test Bit for Set (1) in Register8/16 or Memory8/16 Indicated by CL or Immediate
+; ATM memory formats still missing
+TEST1    MACRO    dst,bit
+         @@SREG86 dst,R
+         IFIDNI   <bit>,<CL>       ; Bit Number in CL
+;; Only reg ATM
+         DB       00Fh,@86_OP1<0001000b,@@SREGW>,@86_MRM<11b,000b,@@SREGV>
+;; Memory reference:
+;;         DB       00Fh,@86_OP1<0001000b,@@SREGW>,@86_MRM<!mod!,000b,!mem!> + offs        ; mem8/16,CL
+         ELSE                      ; Bit Number as Immediate
+          IF       @@SREGW EQ 0 AND (bit LT 0 OR bit GT 7)   ; Byte resister but outside 0..7?
+           IF2
+         .ERR     [&len] not supported. Expression for byte register [&dst] must evaluate to a numeric value ranged 0..7.
+         %OUT     [&len] not supported. Expression for byte register [&dst] must evaluate to a numeric value ranged 0..7.
+           ENDIF
+          ELSE
+           IF       @@SREGW EQ 1 AND (bit LT 0 OR bit GT 15)   ; Byte resister but outside 0..7?
+            IF2
+         .ERR     [&len] not supported. Expression for word register [&dst] must evaluate to a numeric value ranged 0..15.
+         %OUT     [&len] not supported. Expression for word register [&dst] must evaluate to a numeric value ranged 0..15.
+            ENDIF
+           ELSE
+;; Only reg ATM
+         DB       00Fh,@86_OP1<0001100b,@@SREGW>,@86_MRM<11b,000b,@@SREGV>,bit
+;; Memory reference:
+;;         DB       00Fh,@86_OP1<0001100b,@@SREGW>,@86_MRM<!mod!,000b,!mem!> + offs + bit  ; mem8/16,IMM3/4
+           ENDIF
+          ENDIF
+         ENDIF
+         ENDM
+
+; NOT1 Invert Bit in Register8/16 or Memory8/16 Indicated by CL or Immediate
+; ATM memory formats still missing
+NOT1     MACRO    dst,bit
+         @@SREG86 dst,R
+         IFIDNI   <bit>,<CL>       ; Bit Number in CL
+;; Only reg ATM
+         DB       00Fh,@86_OP1<0001011b,@@SREGW>,@86_MRM<11b,000b,@@SREGV>
+;; Memory reference:
+;;         DB       00Fh,@86_OP1<0001011b,@@SREGW>,@86_MRM<!mod!,000b,!mem!> + offs        ; mem8/16,CL
+         ELSE                      ; Bit Number as Immediate
+          IF       @@SREGW EQ 0 AND (bit LT 0 OR bit GT 7)   ; Byte resister but outside 0..7?
+           IF2
+         .ERR     [&len] not supported. Expression for byte register [&dst] must evaluate to a numeric value ranged 0..7.
+         %OUT     [&len] not supported. Expression for byte register [&dst] must evaluate to a numeric value ranged 0..7.
+           ENDIF
+          ELSE
+           IF       @@SREGW EQ 1 AND (bit LT 0 OR bit GT 15)   ; Byte resister but outside 0..7?
+            IF2
+         .ERR     [&len] not supported. Expression for word register [&dst] must evaluate to a numeric value ranged 0..15.
+         %OUT     [&len] not supported. Expression for word register [&dst] must evaluate to a numeric value ranged 0..15.
+            ENDIF
+           ELSE
+;; Only reg ATM
+         DB       00Fh,@86_OP1<0001111b,@@SREGW>,@86_MRM<11b,000b,@@SREGV>,bit
+;; Memory reference:
+;;         DB       00Fh,@86_OP1<0001111b,@@SREGW>,@86_MRM<!mod!,000b,!mem!> + offs + bit  ; mem8/16,IMM3/4
+           ENDIF
+          ENDIF
+         ENDIF
+         ENDM
+
+; CLR1 Clear (->0) Bit in Register8/16 or Memory8/16 Indicated by CL or Immediate
+; ATM memory formats still missing
+CLR1     MACRO    dst,bit
+         @@SREG86 dst,R
+         IFIDNI   <bit>,<CL>       ; Bit Number in CL
+;; Only reg ATM
+         DB       00Fh,@86_OP1<0001001b,@@SREGW>,@86_MRM  <11b,000b,@@SREGV>
+;; Memory reference:
+;;         DB       00Fh,@86_OP1<0001001b,@@SREGW>,@86_MRM<!mod!,000b,!mem!> + offs        ; mem8/16,CL
+         ELSE                      ; Bit Number as Immediate
+          IF       @@SREGW EQ 0 AND (bit LT 0 OR bit GT 7)   ; Byte resister but outside 0..7?
+           IF2
+         .ERR     [&len] not supported. Expression for byte register [&dst] must evaluate to a numeric value ranged 0..7.
+         %OUT     [&len] not supported. Expression for byte register [&dst] must evaluate to a numeric value ranged 0..7.
+           ENDIF
+          ELSE
+           IF       @@SREGW EQ 1 AND (bit LT 0 OR bit GT 15)   ; Byte resister but outside 0..7?
+            IF2
+         .ERR     [&len] not supported. Expression for word register [&dst] must evaluate to a numeric value ranged 0..15.
+         %OUT     [&len] not supported. Expression for word register [&dst] must evaluate to a numeric value ranged 0..15.
+            ENDIF
+           ELSE
+;; Only reg ATM
+         DB       00Fh,@86_OP1<0001101b,@@SREGW>,@86_MRM<11b,000b,@@SREGV>,bit
+;; Memory reference:
+;;         DB       00Fh,@86_OP1<0001101b,@@SREGW>,@86_MRM<!mod!,000b,!mem!> + offs + bit  ; mem8/16,IMM3/4
+           ENDIF
+          ENDIF
+         ENDIF
+         ENDM
+
+; SET1 Set(->1) Bit in Register8/16 or Memory8/16 Indicated by CL or Immediate
+; ATM memory formats still missing
+SET1     MACRO    dst,bit
+         @@SREG86 dst,R
+         IFIDNI   <bit>,<CL>       ; Bit Number in CL
+;; Only reg ATM
+         DB       00Fh,@86_OP1<0001010b,@@SREGW>,@86_MRM<11b,000b,@@SREGV>
+;; Memory reference:
+;;         DB       00Fh,@86_OP1<0001010b,@@SREGW>,@86_MRM<!mod!,000b,!mem!> + offs        ; mem8/16,CL
+         ELSE                      ; Bit Number as Immediate
+          IF       @@SREGW EQ 0 AND (bit LT 0 OR bit GT 7)   ; Byte resister but outside 0..7?
+           IF2
+         .ERR     [&len] not supported. Expression for byte register [&dst] must evaluate to a numeric value ranged 0..7.
+         %OUT     [&len] not supported. Expression for byte register [&dst] must evaluate to a numeric value ranged 0..7.
+           ENDIF
+          ELSE
+           IF       @@SREGW EQ 1 AND (bit LT 0 OR bit GT 15)   ; Byte resister but outside 0..7?
+            IF2
+         .ERR     [&len] not supported. Expression for word register [&dst] must evaluate to a numeric value ranged 0..15.
+         %OUT     [&len] not supported. Expression for word register [&dst] must evaluate to a numeric value ranged 0..15.
+            ENDIF
+           ELSE
+;; Only reg ATM
+         DB       00Fh,@86_OP1<0001110b,@@SREGW>,@86_MRM<11b,000b,@@SREGV>,bit
+;; Memory reference:
+;;         DB       00Fh,@86_OP1<0001110b,@@SREGW>,@86_MRM<!mod!,000b,!mem!> + offs + bit  ; mem8/16,IMM3/4
+           ENDIF
+          ENDIF
+         ENDIF
+         ENDM
+
+
+; BCD String Arithmetic
+
+; Adds, Subtracts or Compares BCD String up to 255 digits
+; Source at ES:DI and DS:SI
+; BCD Sorted in Reverse Order - e.g.Lowest Value Digit at Lowest Memory Address
+; Number of BCD Digits in CL
+; Results Stored at ES:DI
+; DS Can be Overwritten by Prefix.
+
+; Add BCD String
+ADD4S    MACRO
+         DB       00Fh,020h
+         ENDM
+
+; Subtract BCD String
+SUB4S    MACRO
+         DB       00Fh,022h
+         ENDM
+
+; Compare BCD String
+CMP4S    MACRO
+         DB       00Fh,026h
+         ENDM
+
+; BCD Rotates
+; Nibbles of a Reg8/Mem8 is Rotated Thru the Lower Nibble of AL
+
+; ROL4 Rotate Nibble Left From Register <dst> Thru AL
+; ATM Memory Format still missing
+ROL4     MACRO    src
+         @@SREG86 src,B
+         IF       @@SREGR
+         DB       00Fh,028h,@86_MRM<11b,000b,@@SREGV>
+         ELSE
+;        DB       00Fh,028h,@86_MRM<!mod!,000b,!mem!>,src(offs)
+          IF2
+         .ERR     Memory reference [&len] (still) not supported.
+         %OUT     Memory reference [&len] (still) not supported.
+          ENDIF
+         ENDIF
+         ENDM
+
+; ROR4 Rotate Nibble Right From Register <dst> Thru AL
+; ATM Memory Format still missing
+ROR4     MACRO    src
+         @@SREG86 src,B
+         IF       @@SREGR
+         DB       00Fh,02Ah,@86_MRM<11b,000b,@@SREGV>
+         ELSE
+;        DB       00Fh,02Ah,@86_MRM<!mod!,000b,!mem!>,src(offs)
+          IF2
+         .ERR     Memory reference [&len] (still) not supported.
+         %OUT     Memory reference [&len] (still) not supported.
+          ENDIF
+         ENDIF
+         ENDM
+
+;; Beschreibung aufheben wenn er sich schon die Mühe machet
+;--------------------------------------------------------------------------
+; ROL4 dst
+;--------------------------------------------------------------------------
+; Rotates the contents of the destination operand (dst) 1 digit to the 
+; left via the low-order 4 bits (ALL) of the AL register, handling the 
+; contents of the destination operand as a 2-digit packed BCD.
+; As a result, the high-order 4 bits of the AL register are not guaranteed
+;--------------------------------------------------------------------------
+; TODO: Extend to handle memory - currently reg8 only
+;--------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------
+; ROR4 dst
+;--------------------------------------------------------------------------
+; Rotates the contents of the destination operand (dst) 1 digit to the 
+; right via the low-order 4 bits (ALL) of the AL register, handling the 
+; contents of the destination operand as a 2-digit packed BCD.
+; As a result, the high-order 4 bits of the AL register are not guaranteed.
+;--------------------------------------------------------------------------
+; TODO: Extend to handle memory - currently reg8 only
+;--------------------------------------------------------------------------
+
+         ENDIF
+         .CREF
+         .LIST
